@@ -2757,7 +2757,7 @@ bool CheckBlock(const CBlock& block, CValidationState& state, bool fCheckPOW, bo
 bool NextRichScriptPubKey(std::map<CScript, std::pair<int64_t, int> > &pubmap, CScript &richpubkey)
 {
     bool first = true;
-    int minheight;
+    int minheight = 0;
     map<CScript, std::pair<int64_t, int> >::iterator it;
     
     for (it = pubmap.begin(); it != pubmap.end(); it++)
