@@ -1267,16 +1267,16 @@ int64_t GetBlockValue(int nHeight, int64_t nFees)
     return nSubsidy + nFees;
 }
 
-int64_t GetBlockValueRich(int nHeight)
+int64_t GetBlockValueDividends(int nHeight)
 {
-    int64_t nSubsidy = 0;
+    int64_t nDividends = 0;
     if(nHeight >= nRichForkHeight)
-        nSubsidy = 4500 * COIN;
+        nDividends = 4500 * COIN;
     
     // Subsidy is cut in half every 1226400 blocks, which will occur approximately every 7 years
-    nSubsidy >>= (nHeight / 1226400);
+    nDividends >>= (nHeight / 1226400);
     
-    return nSubsidy;
+    return nDividends;
 }
 
 unsigned int static GetNextWorkRequired_Original(const CBlockIndex* pindexLast, const CBlockHeader *pblock, int algo)
@@ -1481,6 +1481,7 @@ bool IsInitialBlockDownload()
 			chainActive.Tip()->GetBlockTime() < GetTime() - 24 * 60 * 60);
 }
 
+bool fRichListWarning = false;
 bool fLargeWorkForkFound = false;
 bool fLargeWorkInvalidChainFound = false;
 CBlockIndex *pindexBestForkTip = NULL, *pindexBestForkBase = NULL;
@@ -1496,6 +1497,11 @@ void CheckForkWarningConditions()
 	// Drop the best fork if it is no longer within 72 blocks of our head
 	if (pindexBestForkTip && chainActive.Height() - pindexBestForkTip->nHeight >= 72)
 		pindexBestForkTip = NULL;
+
+	if(fRichListWarning)
+	{
+		LogPrintf("CheckForkWarningConditions: Warning: Richlist may be compromised.\n");
+	}
 
 	if (pindexBestForkTip
 			|| (pindexBestInvalid
@@ -1869,6 +1875,11 @@ bool ConnectBlock(CBlock& block, CValidationState& state, CBlockIndex* pindex, C
 	}
 
 	bool fScriptChecks = pindex->nHeight >= Checkpoints::GetTotalBlocksEstimate();
+	// Blocks 231253-231311 are inconsistent with the consensus protocol as well as 
+	//289701-289758; 319168-319173; 327532-327536; 334558-334567; 340449-340450; 341431-341434, 342073-342074, 343497-343498
+	//345887-345888; 347035-347036 355209-355214
+	fRichCheck = fRichCheck && pindex->nHeight > 355214;
+
 
 	for (unsigned int i = 0; i < block.vtx.size(); i++) {
 		uint256 hash = block.GetTxHash(i);
@@ -1939,7 +1950,7 @@ bool ConnectBlock(CBlock& block, CValidationState& state, CBlockIndex* pindex, C
 	if (fBenchmark)
 		LogPrintf("- Connect %u transactions: %.2fms (%.3fms/tx, %.3fms/txin)\n", (unsigned)block.vtx.size(), 0.001 * nTime, 0.001 * nTime / block.vtx.size(), nInputs <= 1 ? 0 : 0.001 * nTime / (nInputs-1));
 
-	if (block.vtx[0].GetValueOut() > GetBlockValue(pindex->nHeight, nFees) + 2*GetBlockValueRich(pindex->nHeight))
+	if (block.vtx[0].GetValueOut() > GetBlockValue(pindex->nHeight, nFees) + 2*GetBlockValueDividends(pindex->nHeight))
 		return state.DoS(100,
 				error("ConnectBlock() : coinbase pays too much (actual=%d vs limit=%d)",
 						block.vtx[0].GetValueOut(), GetBlockValue(pindex->nHeight, nFees)),
@@ -1948,23 +1959,40 @@ bool ConnectBlock(CBlock& block, CValidationState& state, CBlockIndex* pindex, C
     // The coinbase tx must be split: 10% to the miner, 45% to the correct rich address and 45% to one of the EIAS addresses
     if(pindex != NULL && pindex->nHeight >= nRichForkHeight)
     {
-    	int64_t nRichValue = GetBlockValueRich(pindex -> nHeight);
-    	CScript richpubkey;
+    	bool fRichPayment = !fRichCheck;
+    	bool fEIASPayment = false;
+    	int64_t nValueDividends = GetBlockValueDividends(pindex -> nHeight);
+    	CScript RichScriptPubKey;
+    	CScript EIASScriptPubKey = NextEIASScriptPubKey(pindex->pprev->nHeight);
+    	if(!NextRichScriptPubKey(mapScriptPubKeys, RichScriptPubKey))
+    		RichScriptPubKey = NextEIASScriptPubKey(pindex->pprev->nHeight + 1);
 
-        if (block.vtx[0].vout[2].scriptPubKey != NextEIASScriptPubKey(pindex->pprev->nHeight) || block.vtx[0].vout[2].nValue != nRichValue)
+    	BOOST_FOREACH(const CTxOut &txout, block.vtx[0].vout)
+    	{
+    		if(txout.nValue == nValueDividends)
+    		{
+    			if(txout.scriptPubKey == EIASScriptPubKey)
+    				fEIASPayment = true;
+    			else if(txout.scriptPubKey == RichScriptPubKey)
+    				fRichPayment = true;
+    		}
+
+    		if(fRichPayment && fEIASPayment)
+    			break;	
+    	}
+
+        if (!fEIASPayment)
         {
             return state.DoS(100, error("ConnectBlock() : EIAS address not correct"), REJECT_INVALID, "bad-eias-payment");
         }     
-        if(NextRichScriptPubKey(mapScriptPubKeys, richpubkey))
+        if(!fRichPayment)
         {
-        	if(fRichCheck && (block.vtx[0].vout[1].scriptPubKey != richpubkey || block.vtx[0].vout[1].nValue != nRichValue))
+        	if(!fRichListWarning)
         		return state.DoS(100, error("ConnectBlock() : rich address not getting paid correctly"), REJECT_INVALID, "bad-rich-payment");
+        	else
+        		return error("ConnectBlock() : Rich list may be compromised");
         }
-        else
-        {
-        	if (block.vtx[0].vout[1].scriptPubKey != NextEIASScriptPubKey(pindex->pprev->nHeight + 1) || block.vtx[0].vout[1].nValue != nRichValue)
-        		return state.DoS(100, error("ConnectBlock() : second EIAS address not correct"), REJECT_INVALID, "bad-rich-payment");
-        }
+
         nTime = GetTimeMicros() - nStart;
     	if (fBenchmark)
 			LogPrintf("- Connect EIAS/Rich: %.2fms (fRichCheck: %s)\n", 0.001 * nTime, fRichCheck);
@@ -2053,8 +2081,75 @@ void static UpdateTip(CBlockIndex *pindexNew) {
 
 }
 
+bool UpdateAddressHeights(map<CScript,bool> &mapAddresses)
+{
+	CBlockIndex *ind = chainActive.Tip();
+	CBlock block;
+
+	while(ind->pprev && !mapAddresses.empty())
+	{		
+		ReadBlockFromDisk(block,ind);
+    	block.BuildMerkleTree();
+        BOOST_FOREACH(const CTransaction &tx, block.vtx)
+        {
+	    	for(unsigned int j = 0; j < tx.vout.size(); j++)
+            {
+	        	CScript scriptp = tx.vout[j].scriptPubKey;
+    	        if(mapAddresses.count(scriptp))
+        	    {	// in principle we shouldn't update heights unless there is voluntary movement or an address is becoming rich
+                    // and therefore not when an address receives smlys, except from the coinbase.
+        	    	if(pindexNew->nHeight < nRichForkV2Height 
+                    	|| tx.IsCoinBase()
+                    	|| (mapScriptPubKeys[scriptp].first >= 25000000*COIN && mapScriptPubKeys[scriptp].first - nValueOut < 25000000*COIN) )
+        	    	{
+						mapScriptPubKeys.at(scriptp).second = ind->nHeight;
+                    	mapAddresses.erase(scriptp);
+                    	if(fDebug)
+                    	{
+	                    	CTxDestination dest;
+    						ExtractDestination(scriptp, dest);
+    						CBitcoinAddress addr;
+    						addr.Set(dest);
+    						LogPrintf("%s found at height %d\n",addr.ToString(),ind->nHeight);	
+    					}   
+        	    	}             	            
+                }
+            }
+        }
+
+       	CBlockUndo undo;
+		CDiskBlockPos pos = ind ->GetUndoPos();
+		if (ind->pprev!=NULL && undo.ReadFromDisk(pos, ind->pprev->GetBlockHash()))
+		{
+			for (unsigned int i=0; i<undo.vtxundo.size(); i++)
+		    {
+	    		for (unsigned int j=0; j<undo.vtxundo[i].vprevout.size(); j++)
+	        	{
+	            	CScript scriptp = undo.vtxundo[i].vprevout[j].txout.scriptPubKey;
+	            	if(mapAddresses.count(scriptp))
+	            	{
+		            	mapScriptPubKeys.at(scriptp).second = ind->nHeight;
+		            	mapAddresses.erase(scriptp);
+		            	if(fDebug)
+                	    {
+                	    	CTxDestination dest;
+    						ExtractDestination(scriptp, dest);
+    						CBitcoinAddress addr;
+    						addr.Set(dest);
+    						LogPrintf("%s found at height %d\n",addr.ToString(),ind->nHeight);	
+    					}              
+	    	        }
+			    }
+	    	}
+		}
+		ind = ind -> pprev;
+	}
+	return mapAddresses.empty();
+}
+
+
 // Disconnect chainActive's tip.
-bool static DisconnectTip(CValidationState &state, map<CScript,int> &richscripts)
+bool static DisconnectTip(CValidationState &state, map<CScript,bool> &mapRich)
 {
     CBlockIndex *pindexDelete = chainActive.Tip();
 	assert(pindexDelete);
@@ -2093,67 +2188,108 @@ bool static DisconnectTip(CValidationState &state, map<CScript,int> &richscripts
     {
 		SyncWithWallets(tx.GetHash(), tx, NULL);
     }
-    /*The richlist is updated every time a new block is connected to the active chain. This update has to be undone if there is something 
-      to disconnect*/
-    map<CScript,int>::iterator address;
-    for(address = richscripts.begin(); address != richscripts.end(); address++)
+    
+    // We need to update the richlist but only care about the heights of rich addresses 
+    // which are neccessary to keep everybody in line.
+    // addresses seen in the fork are marked here and the heights are updated in 
+    // UpdateAddressHeights(), called from ActivateBestChain()
+    typedef std::pair<CScript,bool> pair_t;
+    BOOST_FOREACH(const pair_t &address, mapRich)
     {
-    	if(mapScriptPubKeys.at(address->first).second==pindexDelete->nHeight)
+    	if(mapScriptPubKeys.at(address.first).second == pindexDelete->nHeight)
     	{
-    		richscripts.at(address->first) = -1;
-    		CTxDestination dest;
-    		ExtractDestination(address->first, dest);
-    		CBitcoinAddress addr;
-    		addr.Set(dest);
-    		LogPrintf("%s seen in fork and needs to be relocated\n",addr.ToString());
+    		mapRich.at(address.first) = true;
+    		if(fDebug)
+            {
+                CTxDestination dest;
+    			ExtractDestination(address.first, dest);
+    			CBitcoinAddress addr;
+    			addr.Set(dest);
+    			LogPrintf("%s seen in fork and needs to be relocated\n",addr.ToString());
+    		}         
     	}
     }
-
+    //Undo the richlist value updates
     BOOST_FOREACH(const CTransaction &tx, block.vtx)
     {
-        //Undo richlist update
         for (unsigned int j = 0; j < tx.vout.size(); j++)
         {
-            CScript scriptp = tx.vout[j].scriptPubKey;
-            int64_t nVal = tx.vout[j].nValue;
-            mapScriptPubKeys.at(scriptp).first -= nVal;
-            if (mapScriptPubKeys.at(scriptp).first + nVal >= 25000000*COIN && mapScriptPubKeys.at(scriptp).first < 25000000*COIN)
-	            richscripts.erase(scriptp);
-            if(mapScriptPubKeys.at(scriptp).first == 0)
-                mapScriptPubKeys.erase(scriptp);
+        	int64_t nVal = tx.vout[j].nValue;
+        	CScript scriptpubkey = tx.vout[j].scriptPubKey;
+        	// We only care about scriptpubkeys that correspond to actual addresses (not bare multisigs or op_returns)
+        	// TODO: should pubkey be included?
+        	if(nVal>0 && ( scriptpubkey.IsPayToPublicKeyHash() || scriptpubkey.IsPayToScriptHash() ))
+        	{   //map::at() exeption indicates a discrepency between richlist updates in ConnectTip() and Disconnecttip() -- or something weirder...
+                try
+                {
+	            	mapScriptPubKeys.at(scriptpubkey).first -= nVal;
+            		if (mapScriptPubKeys.at(scriptpubkey).first + nVal >= 25000000*COIN && mapScriptPubKeys.at(scriptpubkey).first < 25000000*COIN)
+	        		{
+		        		mapRich.erase(scriptpubkey);
+	        			if(fDebug)
+	    				{
+		    				CTxDestination des;
+        					ExtractDestination(scriptpubkey, des);
+           					LogPrintf("%s is no longer rich.\n", CBitcoinAddress(des).ToString());
+	    				}	
+	        		}
+            		if(mapScriptPubKeys.at(scriptpubkey).first == 0)
+            		{
+	            		mapScriptPubKeys.erase(scriptpubkey);
+           				if(fDebug)
+	    				{
+		    				CTxDestination des;
+        					ExtractDestination(scriptpubkey, des);
+           					LogPrintf("Balance of %s is 0, address removed.\n", CBitcoinAddress(des).ToString());
+	    				}
+            		}               
+        		}
+        		catch (std::exception& e) {
+					PrintExceptionContinue(&e, "DisconnectTip()");
+        		}
+        	}
+        	else
+        		continue;	         
         }
     }
 	CBlockUndo undo;
 	CDiskBlockPos pos = pindexDelete ->GetUndoPos();
+
 	if (pindexDelete->pprev!=NULL && undo.ReadFromDisk(pos, pindexDelete->pprev->GetBlockHash()))
 	{
 	    for (unsigned int i=0; i<undo.vtxundo.size(); i++)
 	    {
 	        for (unsigned int j=0; j<undo.vtxundo[i].vprevout.size(); j++)
 	        {
-	            CScript scriptp = undo.vtxundo[i].vprevout[j].txout.scriptPubKey;
-	            if(mapScriptPubKeys.count(scriptp))
+	        	int64_t nValueUndo = undo.vtxundo[i].vprevout[j].txout.nValue;
+	        	CScript scriptpubkey = undo.vtxundo[i].vprevout[j].txout.scriptPubKey;
+	        	// as before, only scriptpubkeys corresponding to "actual addresses".
+	        	// This check was implemented in RichForkV2Height but a P2SH address
+	        	// has never been entitled to dividends before that 
+	        	if(nValueUndo > 0 && ( scriptpubkey.IsPayToPublicKeyHash() || scriptpubkey.IsPayToScriptHash() ))
 	            {
-	            	int64_t nVal = undo.vtxundo[i].vprevout[j].txout.nValue;
-	            	mapScriptPubKeys.at(scriptp).first += nVal;
-	            	if (mapScriptPubKeys.at(scriptp).first - nVal < 25000000*COIN && mapScriptPubKeys.at(scriptp).first >= 25000000*COIN)
-	            		richscripts.insert(pair<CScript, int>(scriptp, -1));
-	            }
-
-	            else
-	            {
-	            	int64_t newvalue = undo.vtxundo[i].vprevout[j].txout.nValue;
-	            	if(newvalue > 0)
-	            	{
-	            		int newheight = pindexDelete ->nHeight;
-	            		std::pair<int64_t, int> newvalueandheight = std::make_pair(newvalue, newheight);
-	            		std::pair<CScript, std::pair<int64_t, int> > newpair = std::make_pair(scriptp, newvalueandheight);
-	            		mapScriptPubKeys.insert(newpair);
+	            	if(mapScriptPubKeys.count(scriptpubkey))
+	            	{	            		
+	            		mapScriptPubKeys.at(scriptpubkey).first += nValueUndo;
+	            		if (mapScriptPubKeys.at(scriptpubkey).first - nValueUndo < 25000000*COIN && mapScriptPubKeys.at(scriptpubkey).first >= 25000000*COIN)
+		            		mapRich.insert(pair<CScript, bool>(scriptpubkey, true));
+		            }
+		            else
+	        		{
+	        			// a scriptpubkey previously deleted in ConnectTip()
+	            		std::pair<int64_t, int> pairBalance = std::make_pair(nValueUndo, pindexDelete->nHeight);
+                    	std::pair<CScript, std::pair<int64_t, int> > pairScriptBalance = std::make_pair(scriptpubkey, pairBalance);
+                    	mapScriptPubKeys.insert(pairScriptBalance);
+	            		if(nValueUndo > 25000000*COIN)
+	            			mapRich.insert(pair<CScript, bool>(scriptpubkey, true));
 	            	}
 	            }
+	            else
+	            	continue;
 	        }
 	    }
 	}
+
 	if (fBenchmark)
 		LogPrintf("- Disconnect richlist: %.2fms\n", (GetTimeMicros() - nStart) * 0.001);
 	return true;
@@ -2210,28 +2346,35 @@ bool static ConnectTip(CValidationState &state, CBlockIndex *pindexNew)
     }
     //Update rich list
     BOOST_FOREACH(const CTransaction &tx, block.vtx)
-    {                
-        for (unsigned int j = 0; j < tx.vout.size(); j++)
+    {
+        for(unsigned int j = 0; j < tx.vout.size(); j++)
         {
-            CScript scriptp = tx.vout[j].scriptPubKey;
-            if(mapScriptPubKeys.count(scriptp))
+        	int64_t nValueOut = tx.vout[j].nValue;
+            if(nValueOut > 0)
             {
-                mapScriptPubKeys[scriptp].first += tx.vout[j].nValue;
-                mapScriptPubKeys[scriptp].second = pindexNew->nHeight;
-            }
-            else
-            {
-                int64_t newvalue = tx.vout[j].nValue;
-                int newheight = pindexNew->nHeight;
-                std::pair<int64_t, int> newvalueandheight = std::make_pair(newvalue, newheight);
-                if (newvalueandheight.first > 0)
+                CScript scriptp = tx.vout[j].scriptPubKey;
+                // TODO: should pubkey be a possible scriptpubkey?
+                if(!(scriptp.IsPayToPublicKeyHash() || !scriptp.IsPayToScriptHash()))
+                	continue;
+                if(mapScriptPubKeys.count(scriptp))
                 {
-                    std::pair<CScript, std::pair<int64_t, int> > newpair = std::make_pair(scriptp, newvalueandheight);
-                    mapScriptPubKeys.insert(newpair);
+                    mapScriptPubKeys[scriptp].first += nValueOut;
+                    // in principle we shouldn't update heights unless there is voluntary movement or an address is becoming rich
+                    // and therefore not when an address receives smlys, except from the coinbase.
+                    if( pindexNew->nHeight < nRichForkV2Height 
+                    	|| tx.IsCoinBase()
+                    	|| (mapScriptPubKeys[scriptp].first >= 25000000*COIN && mapScriptPubKeys[scriptp].first - nValueOut < 25000000*COIN) )
+                    { mapScriptPubKeys[scriptp].second = pindexNew->nHeight; }
+                }
+                else
+                {	// new scriptpubkey
+                    std::pair<int64_t, int> pairBalance = std::make_pair(tx.vout[j].nValue, pindexNew->nHeight);
+                    std::pair<CScript, std::pair<int64_t, int> > pairScriptBalance = std::make_pair(scriptp, pairBalance);
+                    mapScriptPubKeys.insert(pairScriptBalance);
                 }
             }
-        }
-    }
+        }                       
+    } 
     CBlockUndo undo;
     CDiskBlockPos pos = pindexNew ->GetUndoPos();
 
@@ -2242,12 +2385,31 @@ bool static ConnectTip(CValidationState &state, CBlockIndex *pindexNew)
 	    	for (unsigned int j=0; j<undo.vtxundo[i].vprevout.size();j++)
 	    	{
 	    		CScript scriptp = undo.vtxundo[i].vprevout[j].txout.scriptPubKey;
-	    		mapScriptPubKeys.at(scriptp).first -= undo.vtxundo[i].vprevout[j].txout.nValue;
-	    		mapScriptPubKeys.at(scriptp).second = pindexNew->nHeight;
-	    		if (mapScriptPubKeys.at(scriptp).first==0)
-	    		{
-	    			mapScriptPubKeys.erase(scriptp);
-	    		}
+				// We only care about scriptpubkeys that correspond to actual addresses (not bare multisigs or op_returns)
+        		// TODO: should pubkey be included?
+        		if(nVal>0 && ( scriptpubkey.IsPayToPublicKeyHash() || scriptpubkey.IsPayToScriptHash() ))
+        		{   //map::at() exeption indicates a discrepency between richlist updates in ConnectTip() and Disconnecttip() -- or something weirder...
+	                try
+                	{
+	    				mapScriptPubKeys.at(scriptp).first -= undo.vtxundo[i].vprevout[j].txout.nValue;
+	    				mapScriptPubKeys.at(scriptp).second = pindexNew->nHeight;
+	    				if (mapScriptPubKeys.at(scriptp).first==0)
+	    				{
+	    					mapScriptPubKeys.erase(scriptp);
+	    					if(fDebug)
+	    					{
+	    						CTxDestination des;
+        						ExtractDestination(scriptp, des);
+           						LogPrintf("Balance of %s is 0, address removed.\n", CBitcoinAddress(des).ToString());
+	    					}
+	    				}
+	    			}
+	    			catch (std::exception& e) {
+						PrintExceptionContinue(&e, "ConnectTip()");
+        			}
+        		}
+        		else
+	        		continue;	   
 	    	}
 	    }
 	}   
@@ -2258,13 +2420,11 @@ bool static ConnectTip(CValidationState &state, CBlockIndex *pindexNew)
     {
         LogPrintf("Backing up rich list to disk (happens every 20000 blocks) \n");
         bitdb.RemoveDb("richlist.dat");
-        CRichListDB rich("richlist.dat","cr+");
-        map<CScript, std::pair<int64_t, int> >::iterator it;
-        for (it = mapScriptPubKeys.begin(); it != mapScriptPubKeys.end(); it++)
-        {
-            CScript publickey = it->first;
-            std::pair<int64_t, int> writepair = it->second;
-            rich.WriteAddress(publickey, writepair);
+        CRichListDB DBRich("richlist.dat","cr+");
+        typedef std::pair<CScript,std::pair<int64_t, int> > pair_t;
+    	BOOST_FOREACH(const pair_t &address, mapScriptPubKeys)
+    	{
+    		DBRich.WriteAddress(address.first, address.second);
         }
     }
 
@@ -2325,11 +2485,13 @@ void static FindMostWorkChain() {
 }
 
 // Try to activate to the most-work chain (thereby connecting it).
+
 bool ActivateBestChain(CValidationState &state) {
 	LOCK(cs_main);
 	CBlockIndex *pindexOldTip = chainActive.Tip();
 	bool fComplete = false;
 	bool fFork = false;
+	bool fRichListCompromised = fRichListWarning;
 	while (!fComplete) {
 		FindMostWorkChain();
 		fComplete = true;
@@ -2340,86 +2502,45 @@ bool ActivateBestChain(CValidationState &state) {
 		// Check whether we have something to do.
 		if (chainMostWork.Tip() == NULL) break;
 
-		// Rich addresses to check in DisconnectTip()
-		map<CScript,int> richscripts;
+		// Address heights are incorrect in case of fork 
+		// and the rich addresses seen there need to be marked in DisconnectTip()
+		map<CScript,bool> mapRich;
 		if(fFork)
-		{			
-			map<CScript, std::pair<int64_t, int> >::iterator it;
-			for (it = mapScriptPubKeys.begin(); it != mapScriptPubKeys.end(); it++) {
-	        	if((it->second).first >= 25000000*COIN)
-        			richscripts.insert( pair<CScript,int>(it->first,1) );
+		{		
+			fRichListWarning = true;	
+			std::pair<CScript, std::pair<int64_t, int> > p;
+			BOOST_FOREACH(p, mapScriptPubKeys)
+			{
+	        	if((p.second).first >= 25000000*COIN)
+        			mapRich.insert( pair<CScript,bool>(p.first,false) );
 	        }
 		}		
 
 		// Disconnect active blocks which are no longer in the best chain.
 		while (chainActive.Tip() && !chainMostWork.Contains(chainActive.Tip())) {
-			if (!DisconnectTip(state, richscripts))
+			if (!DisconnectTip(state, mapRich))
 				return false;
 		}
 
 		// Erase rich addresses not seen in fork
 		if(fFork)
 		{
-			map<CScript,int>::iterator address;
-    		for(address = richscripts.begin(); address != richscripts.end(); address++) {
-				if(address->second>0)
-					richscripts.erase(address);
-			}
-			LogPrintf("%d addresses seen at fork and need to be relocated\n",richscripts.size());
-		}
+			for(map<CScript,bool>::iterator it = mapRich.begin(), next_it = mapRich.begin(); it != mapRich.end(); it = next_it) 
+			{
+				next_it = it; ++next_it;
 
-		CBlockIndex *ind = chainActive.Tip();
-		CBlock block;
-		
-		// Check all inputs and outputs in blocks, going back from the current tip 
-		// until all addresses are accounted for
+				if(!it->second)
+					mapRich.erase(it);
+			}						
+			LogPrintf("%d addresses seen at fork and need to be relocated\n",mapRich.size());
+		}		
+
+		// locate addresses from fork at old height
+		// The rich list is compromised if we are not successful. If fRichListWarning is true
+		// then we do not mark blocks invalid in ConnectBlock() if the address is incorrect
+		// and UpdateAddressHeights() can then be run in init by starting with -fixrichlist
 		if(fFork) {
-			while(richscripts.size()>0)
-			{			
-				ReadBlockFromDisk(block,ind);
-                	block.BuildMerkleTree();
-                	BOOST_FOREACH(const CTransaction &tx, block.vtx)
-                	{
-	                    for(unsigned int j = 0; j < tx.vout.size(); j++)
-                    	{
-	                        CScript scriptp = tx.vout[j].scriptPubKey;
-    	                    if(richscripts.count(scriptp))
-        	                {
-            	                mapScriptPubKeys.at(scriptp).second = ind->nHeight;
-                	            richscripts.erase(scriptp);
-                	            CTxDestination dest;
-    							ExtractDestination(scriptp, dest);
-    							CBitcoinAddress addr;
-    							addr.Set(dest);
-    							LogPrintf("%s found at height %d",addr.ToString(),ind->nHeight);
-                    	    }
-                    	}
-                	}
-
-            	CBlockUndo undo;
-				CDiskBlockPos pos = ind ->GetUndoPos();
-				if (ind->pprev!=NULL && undo.ReadFromDisk(pos, ind->pprev->GetBlockHash()))
-				{
-		   			for (unsigned int i=0; i<undo.vtxundo.size(); i++)
-		    		{
-	    	    		for (unsigned int j=0; j<undo.vtxundo[i].vprevout.size(); j++)
-	        			{
-	            			CScript scriptp = undo.vtxundo[i].vprevout[j].txout.scriptPubKey;
-	            			if(richscripts.count(scriptp))
-	            			{
-		            			mapScriptPubKeys.at(scriptp).second = ind->nHeight;
-		            			richscripts.erase(scriptp);
-		            			CTxDestination dest;
-    							ExtractDestination(scriptp, dest);
-    							CBitcoinAddress addr;
-    							addr.Set(dest);
-    							LogPrintf("%s found at height %d \n",addr.ToString(),ind->nHeight);
-	    	        		}
-				        }
-	    			}
-				}
-				ind = ind -> pprev;
-			}
+			fRichListWarning = !UpdateAddressHeights(mapRich) || fRichListCompromised;
 		}
 		
 		// Connect new blocks.
@@ -2500,8 +2621,16 @@ bool AddToBlockIndex(CBlock& block, CValidationState& state, const CDiskBlockPos
 		static uint256 hashPrevBestCoinBase;
 		g_signals.UpdatedTransaction(hashPrevBestCoinBase);
 		hashPrevBestCoinBase = block.GetTxHash(0);
-	} else
+	} 
+	else
+	{
 		CheckForkWarningConditionsOnNewFork(pindexNew);
+		if(fDebug)
+		{
+			LogPrintf("Block found in fork at height: %i\n",pindexNew->nHeight);
+		}
+	}
+		
 
 	if (!pblocktree->Flush())
 		return state.Abort(_("Failed to sync block index"));
@@ -2753,28 +2882,27 @@ bool CheckBlock(const CBlock& block, CValidationState& state, bool fCheckPOW, bo
 	return true;
 }
 
-//Finds the oldest address that owns more than 25 million SMLY
-bool NextRichScriptPubKey(std::map<CScript, std::pair<int64_t, int> > &pubmap, CScript &richpubkey)
+//Finds the oldest address that owns more than 25 million SMLY.
+//Expects mapScript to be in the format of mapScriptPubKeys, <scriptPubKey, <balance, height> >
+bool NextRichScriptPubKey(const std::map<CScript, std::pair<int64_t, int> > &mapScript, CScript &richpubkey)
 {
-    bool first = true;
+    bool fRet = false; // false if there is no rich address
     int minheight = 0;
-    map<CScript, std::pair<int64_t, int> >::iterator it;
-    
-    for (it = pubmap.begin(); it != pubmap.end(); it++)
+    typedef std::pair<CScript, std::pair<int64_t, int> > pair_t;
+    BOOST_FOREACH(const pair_t &address, mapScript)
     {
-        if(first && it->second.first >= 25000000*COIN)
-        {
-            minheight = it->second.second;
-            first = false;
-        }
-        if(it->second.second <= minheight && it->second.first >= 25000000*COIN)
-        {
-            richpubkey = it->first;
-            minheight = it->second.second;
+    	if(address.second.first >= 25000000*COIN)
+    	{
+    		if(!fRet || address.second.second <= minheight)
+    		{
+    			richpubkey = address.first;
+    			minheight = it.second.second;
+            	fRet = true;
+    		}
+            
         }
     }
-
-    return !first;
+    return fRet;
 }
 
 CScript NextEIASScriptPubKey(int nHeight){
@@ -3586,6 +3714,12 @@ string GetWarnings(string strFor)
 		strStatusBar = strMiscWarning;
 	}
 
+	if(fRichListWarning)
+	{
+		nPriority=2000;
+		strStatusBar = strRPC = _("Warning: Richlist may be compromised! Suggest restarting with '-fixrichlist' in the event of apparent fork or reindexing if that fails.");
+	}
+
 	if (fLargeWorkForkFound)
 	{
 		nPriority = 2000;
@@ -3820,8 +3954,8 @@ bool static ProcessMessage(CNode* pfrom, string strCommand, CDataStream& vRecv)
 			vRecv >> pfrom->strSubVer;
 			pfrom->cleanSubVer = SanitizeString(pfrom->strSubVer);
 
-			if (
-					(pfrom->cleanSubVer == "/Smlyora:1.3.0/") ||
+			if ( // TODO: throw out or put in relevant versions?
+					(pfrom->cleanSubVer == "/Aurora:1.3.0/") ||
 					(pfrom->cleanSubVer == "/Arngrímur Jónsson:0.8.7.5/") ||
 					(pfrom->cleanSubVer == "/Satoshi:0.8.7.5/")
 			)

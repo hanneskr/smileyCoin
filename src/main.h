@@ -35,6 +35,7 @@ class CInv;
 
 const int64_t nDiffChangeTarget = 5; // Patch effective @ block 5
 const int nRichForkHeight = 218000;
+const int nRichForkV2Height = 450000;
 
 /** The maximum allowed size for a serialized block, in bytes (network rule) */
 static const unsigned int MAX_BLOCK_SIZE 	  	= 1000000;
@@ -173,9 +174,11 @@ std::string GetWarnings(std::string strFor);
 /** Retrieve a transaction (from memory pool, or from disk, if possible) */
 bool GetTransaction(const uint256 &hash, CTransaction &tx, uint256 &hashBlock, bool fAllowSlow = false);
 /** Find the best known block, and make it the tip of the block chain */
+bool UpdateAddressHeights(map<CScript,bool> &mapAddresses);
+
 bool ActivateBestChain(CValidationState &state);
 int64_t GetBlockValue(int nHeight, int64_t nFees);
-int64_t GetBlockValueRich(int nHeight);
+int64_t GetBlockValueDividends(int nHeight);
 unsigned int GetNextWorkRequired(const CBlockIndex* pindexLast, const CBlockHeader *pblock, int algo);
 
 void UpdateTime(CBlockHeader& block, const CBlockIndex* pindexPrev);

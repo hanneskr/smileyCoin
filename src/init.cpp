@@ -951,7 +951,7 @@ bool AppInit2(boost::thread_group& threadGroup)
 //************************************************************** Step 8 make richlist up to date
     /*This is only run if the last shutdown was unexpected and the richlist wasn't written to the disk properly, or
       if this is the first time a node starts up after the update in August 2017. The richlist catches up with the
-      current heighest block.*/
+      current best block.*/
     CCoinsViewCache view(*pcoinsdbview, true);
     if(mapBlockIndex.count((pcoinsdbview->GetBestBlock())))
     {
@@ -981,32 +981,49 @@ bool AppInit2(boost::thread_group& threadGroup)
                 {
                     for(unsigned int j = 0; j < tx.vout.size(); j++)
                     {
-                        CScript scriptp = tx.vout[j].scriptPubKey;
-                        if(mapScriptPubKeys.count(scriptp))
+                        if(tx.vout[j].nValue > 0)
                         {
-                            mapScriptPubKeys[scriptp].first += tx.vout[j].nValue;
-                            mapScriptPubKeys[scriptp].second = ind->nHeight;
-                        }
-                        else
-                        {
-                            int64_t newvalue = tx.vout[j].nValue;
-                            int newheight = ind->nHeight;
-                            std::pair<int64_t, int> newvalueandheight = std::make_pair(newvalue, newheight);
-                            if(newvalueandheight.first > 0)
+                            CScript scriptp = tx.vout[j].scriptPubKey;
+                            if(mapScriptPubKeys.count(scriptp))
                             {
-                                std::pair<CScript, std::pair<int64_t, int> > newpair = std::make_pair(scriptp, newvalueandheight);
-                                mapScriptPubKeys.insert(newpair);
+                                mapScriptPubKeys[scriptp].first += tx.vout[j].nValue;
+                                mapScriptPubKeys[scriptp].second = ind->nHeight;
+                            }
+                            else
+                            {
+                                std::pair<int64_t, int> pairBalance = std::make_pair(tx.vout[j].nValue, ind->nHeight);
+                                std::pair<CScript, std::pair<int64_t, int> > pairScriptBalance = std::make_pair(scriptp, pairBalance);
+                                mapScriptPubKeys.insert(pairScriptBalance);
                             }
                         }
-                    }
+                    }                       
                 }
                 
                 CBlockUndo undo;
                 CDiskBlockPos pos = ind->GetUndoPos();  
                 if(ind->pprev!=NULL && undo.ReadFromDisk(pos,ind->pprev->GetBlockHash()))
                 {
-
-                    for (unsigned int i=0; i<undo.vtxundo.size(); i++)
+                    BOOST_FOREACH(const CTxUndo &txundo, undo.vtxundo)
+                    {
+                        BOOST_FOREACH(const CTxInUndo &txprevout, txundo.vprevout)
+                        {
+                            CScript scriptp = txprevout.txout.scriptPubKey;
+                            
+                            mapScriptPubKeys[scriptp].first -= txprevout.txout.nValue;
+                            mapScriptPubKeys[scriptp].second = ind->nHeight;
+                            if(mapScriptPubKeys[scriptp].first==0)
+                            {
+                                mapScriptPubKeys.erase(scriptp);
+                                if(fDebug)
+                                {
+                                    CTxDestination des;
+                                    ExtractDestination(scriptp, des);
+                                    LogPrintf("Balance of %s is 0, address removed.", CBitcoinAddress(des).ToString());
+                                }
+                            }     
+                        }                        
+                    }
+                   /* for (unsigned int i=0; i<undo.vtxundo.size(); i++)
                     {
                         for (unsigned int j=0; j<undo.vtxundo[i].vprevout.size(); j++)
                         {
@@ -1018,15 +1035,33 @@ bool AppInit2(boost::thread_group& threadGroup)
                                 mapScriptPubKeys.erase(scriptp);
                             }   
                         }
-                    }
+                    }*/
                 }
-
             }
         }
 
         
     }
     LogPrintf("Rich list has caught up \n");
+
+    bool fRichFix = GetBoolArg("-fixrichlist", false);
+
+    if(fRichFix)
+    {
+        map<CScript,bool> mapRich;
+        std::pair<CScript, std::pair<int64_t, int> > p;
+        BOOST_FOREACH(p, mapScriptPubKeys)
+        {
+            if((p.second).first >= 25000000*COIN)
+                mapRich.insert( pair<CScript,bool>(p.first,false) );
+        }
+        if(!UpdateAddressHeights(mapRich))
+            LogPrintf("Failed to relocate rich addresses. Rich list may be compromised. \n");
+    }
+
+
+
+
     // ********************************************************* Step 9: load wallet
 #ifdef ENABLE_WALLET
     if (fDisableWallet) {

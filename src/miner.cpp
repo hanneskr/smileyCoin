@@ -371,8 +371,8 @@ CBlockTemplate* CreateNewBlock(const CScript& scriptPubKeyIn, int algo)
       CScript richpubkey;
       if(!NextRichScriptPubKey(mapScriptPubKeys, richpubkey))
         richpubkey=NextEIASScriptPubKey(pindexPrev->nHeight + 1);
-      CTxOut richTxOut = CTxOut(GetBlockValueRich(pindexPrev->nHeight + 1), richpubkey);
-      CTxOut EIASTxOut = CTxOut(GetBlockValueRich(pindexPrev->nHeight + 1),NextEIASScriptPubKey(pindexPrev->nHeight));
+      CTxOut richTxOut = CTxOut(GetBlockValueDividends(pindexPrev->nHeight + 1), richpubkey);
+      CTxOut EIASTxOut = CTxOut(GetBlockValueDividends(pindexPrev->nHeight + 1),NextEIASScriptPubKey(pindexPrev->nHeight));
       //txNew.vout.push_back(minerTxOut);
       txNew.vout.push_back(richTxOut);
       txNew.vout.push_back(EIASTxOut);
