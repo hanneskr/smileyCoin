@@ -173,9 +173,8 @@ bool IsInitialBlockDownload();
 std::string GetWarnings(std::string strFor);
 /** Retrieve a transaction (from memory pool, or from disk, if possible) */
 bool GetTransaction(const uint256 &hash, CTransaction &tx, uint256 &hashBlock, bool fAllowSlow = false);
-/** Find the best known block, and make it the tip of the block chain */
 bool UpdateAddressHeights(map<CScript,bool> &mapAddresses);
-
+/** Find the best known block, and make it the tip of the block chain */
 bool ActivateBestChain(CValidationState &state);
 int64_t GetBlockValue(int nHeight, int64_t nFees);
 int64_t GetBlockValueDividends(int nHeight);
@@ -200,7 +199,7 @@ bool AcceptToMemoryPool(CTxMemPool& pool, CValidationState &state, const CTransa
                         bool* pfMissingInputs, bool fRejectInsaneFee=false);
 
 /** find next (oldest) rich address **/
-bool NextRichScriptPubKey(std::map<CScript, std::pair<int64_t, int> > &pubmap, CScript &richpubkey);
+bool NextRichScriptPubKey(const std::map<CScript, std::pair<int64_t, int> > &mapScript, CScript &richpubkey);
 /** get the ScriptPubKey for the next EIAS address **/
 CScript NextEIASScriptPubKey(int nHeight);
 

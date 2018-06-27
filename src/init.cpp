@@ -959,6 +959,7 @@ bool AppInit2(boost::thread_group& threadGroup)
         LogPrintf("Best block now: %d \n", mapBlockIndex.find((pcoinsdbview->GetBestBlock()))->second->nHeight);
         if(maxheight < mapBlockIndex.find((pcoinsdbview->GetBestBlock()))->second->nHeight)
         {
+            assert(maxheight >= 0);
             CBlockIndex *ind;
             if (maxheight > 0)
                 ind = chainActive[maxheight-1];
@@ -1018,7 +1019,7 @@ bool AppInit2(boost::thread_group& threadGroup)
                                 {
                                     CTxDestination des;
                                     ExtractDestination(scriptp, des);
-                                    LogPrintf("Balance of %s is 0, address removed.", CBitcoinAddress(des).ToString());
+                                    LogPrintf("Balance of %s is 0, address removed. \n", CBitcoinAddress(des).ToString());
                                 }
                             }     
                         }                        
