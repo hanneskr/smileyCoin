@@ -9,7 +9,6 @@
 #include "core.h"
 #include "main.h"
 #include "net.h"
-#include "richlistdb.cpp"
 #ifdef ENABLE_WALLET
 #include "wallet.h"
 #endif
@@ -185,6 +184,7 @@ CBlockTemplate* CreateNewBlock(const CScript& scriptPubKeyIn, int algo)
     LOCK2(cs_main, mempool.cs);
     CBlockIndex* pindexPrev = chainActive.Tip();
     CCoinsViewCache view(*pcoinsTip, true);
+    CRichViewCache richlist(*prichTip);
 
     // Priority order to process transactions
     list<COrphan> vOrphan; // list memory doesn't move
@@ -327,7 +327,7 @@ CBlockTemplate* CreateNewBlock(const CScript& scriptPubKeyIn, int algo)
 
       CTxUndo txundo;
       uint256 hash = tx.GetHash();
-      UpdateCoins(tx, state, view, txundo, pindexPrev->nHeight+1, hash);
+      UpdateCoins(tx, state, view, richlist, txundo, pindexPrev->nHeight+1, hash);
 
       // Added
       pblock->vtx.push_back(tx);
@@ -369,7 +369,7 @@ CBlockTemplate* CreateNewBlock(const CScript& scriptPubKeyIn, int algo)
       txNew.vout[0].nValue = GetBlockValue(pindexPrev->nHeight+1, nFees);
       //CTxOut minerTxOut = CTxOut(0, scriptPubKeyIn);
       CScript richpubkey;
-      if(!NextRichScriptPubKey(mapScriptPubKeys, richpubkey))
+      if(!prichTip->GetNextRichScriptPubKey(richpubkey))
         richpubkey=NextEIASScriptPubKey(pindexPrev->nHeight + 1);
       CTxOut richTxOut = CTxOut(GetBlockValueDividends(pindexPrev->nHeight + 1), richpubkey);
       CTxOut EIASTxOut = CTxOut(GetBlockValueDividends(pindexPrev->nHeight + 1),NextEIASScriptPubKey(pindexPrev->nHeight));
@@ -392,8 +392,9 @@ CBlockTemplate* CreateNewBlock(const CScript& scriptPubKeyIn, int algo)
     indexDummy.pprev = pindexPrev;
     indexDummy.nHeight = pindexPrev->nHeight + 1;
     CCoinsViewCache viewNew(*pcoinsTip, true);
+    CRichViewCache richlistNew(*prichTip);
     CValidationState state;
-    if (!ConnectBlock(*pblock, state, &indexDummy, viewNew, true, true))
+    if (!ConnectBlock(*pblock, state, &indexDummy, viewNew, richlistNew, true))
     {
         LogPrintf("CreateNewBlock() : ConnectBlock failed\n");
         return NULL;
@@ -426,7 +427,7 @@ void FormatHashBuffers(CBlock* pblock, char* pmidstate, char* pdata, char* phash
   //
   // Pre-build hash buffers
   //
-  struct
+  struct 
   {
     struct unnamed2
     {

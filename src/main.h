@@ -60,8 +60,6 @@ static const unsigned int BLOCKFILE_CHUNK_SIZE = 0x1000000; // 16 MiB
 static const unsigned int UNDOFILE_CHUNK_SIZE = 0x100000; // 1 MiB
 /** Coinbase transaction outputs can only be spent after this number of new blocks (network rule) */
 static const int COINBASE_MATURITY = 80; // 8 blocks
-/** Threshold for nLockTime: below this value it is interpreted as block number, otherwise as UNIX timestamp. */
-static const unsigned int LOCKTIME_THRESHOLD = 500000000; // Tue Nov  5 00:53:20 1985 UTC
 /** Maximum number of script-checking threads allowed */
 static const int MAX_SCRIPTCHECK_THREADS = 16;
 /** -par default (number of script-checking threads, 0 = auto) */
@@ -102,7 +100,7 @@ extern int nScriptCheckThreads;
 extern bool fTxIndex;
 extern unsigned int nCoinCacheSize;
 extern int miningAlgo;
-extern const std::string EIASaddresses[]; 
+
 
 
 
@@ -155,6 +153,8 @@ bool LoadBlockIndex();
 void UnloadBlockIndex();
 /** Verify consistency of the block and coin databases */
 bool VerifyDB(int nCheckLevel, int nCheckDepth);
+/** Initialize the rich list*/
+bool InitRichList();
 /** Print the loaded block tree */
 void PrintBlockTree();
 /** Process protocol messages received from a given node */
@@ -173,7 +173,8 @@ bool IsInitialBlockDownload();
 std::string GetWarnings(std::string strFor);
 /** Retrieve a transaction (from memory pool, or from disk, if possible) */
 bool GetTransaction(const uint256 &hash, CTransaction &tx, uint256 &hashBlock, bool fAllowSlow = false);
-bool UpdateAddressHeights(map<CScript,bool> &mapAddresses);
+/** Properly roll back the chainstate after a fork in the active chain*/
+bool ResyncViews(CCoinsView& coins, CRichViewCache& richlist);
 /** Find the best known block, and make it the tip of the block chain */
 bool ActivateBestChain(CValidationState &state);
 int64_t GetBlockValue(int nHeight, int64_t nFees);
@@ -197,11 +198,6 @@ void Misbehaving(NodeId nodeid, int howmuch);
 /** (try to) add transaction to memory pool **/
 bool AcceptToMemoryPool(CTxMemPool& pool, CValidationState &state, const CTransaction &tx, bool fLimitFree,
                         bool* pfMissingInputs, bool fRejectInsaneFee=false);
-
-/** find next (oldest) rich address **/
-bool NextRichScriptPubKey(const std::map<CScript, std::pair<int64_t, int> > &mapScript, CScript &richpubkey);
-/** get the ScriptPubKey for the next EIAS address **/
-CScript NextEIASScriptPubKey(int nHeight);
 
 struct CNodeStateStats {
     int nMisbehavior;
@@ -318,7 +314,7 @@ bool CheckInputs(const CTransaction& tx, CValidationState &state, CCoinsViewCach
                  std::vector<CScriptCheck> *pvChecks = NULL);
 
 // Apply the effects of this transaction on the UTXO set represented by view
-void UpdateCoins(const CTransaction& tx, CValidationState &state, CCoinsViewCache &inputs, CTxUndo &txundo, int nHeight, const uint256 &txhash);
+void UpdateCoins(const CTransaction& tx, CValidationState &state, CCoinsViewCache &inputs, CRichViewCache &richlist, CTxUndo &txundo, int nHeight, const uint256 &txhash);
 
 // Context-independent validity checks
 bool CheckTransaction(const CTransaction& tx, CValidationState& state);
@@ -602,10 +598,11 @@ bool ReadBlockFromDisk(CBlock& block, const CBlockIndex* pindex);
  *  In case pfClean is provided, operation will try to be tolerant about errors, and *pfClean
  *  will be true if no problems were found. Otherwise, the return value will be false in case
  *  of problems. Note that in any case, coins may be modified. */
-bool DisconnectBlock(CBlock& block, CValidationState& state, CBlockIndex* pindex, CCoinsViewCache& coins, bool* pfClean = NULL);
+ // The address information is not undone here
+bool DisconnectBlock(CBlock& block, CValidationState& state, CBlockIndex* pindex, CCoinsViewCache& coins, CRichViewCache& richlist, bool* pfClean = NULL);
 
 // Apply the effects of this block (with given index) on the UTXO set represented by coins
-bool ConnectBlock(CBlock& block, CValidationState& state, CBlockIndex* pindex, CCoinsViewCache& coins, bool fJustCheck = false, bool fRichCheck = false);
+bool ConnectBlock(CBlock& block, CValidationState& state, CBlockIndex* pindex, CCoinsViewCache& coins, CRichViewCache& richlist, bool fJustCheck = false);
 
 // Add this block to the block index, and if necessary, switch the active block chain to this
 bool AddToBlockIndex(CBlock& block, CValidationState& state, const CDiskBlockPos& pos);
@@ -891,7 +888,7 @@ public:
     }
 
     bool CheckIndex() const
-    {
+    { //TODO: afhverju bara sha
         int algo = GetAlgo();
         if (algo == ALGO_SHA256D)
             return CheckProofOfWork(GetBlockHash(), nBits, algo);
@@ -1138,6 +1135,10 @@ extern CCoinsViewCache *pcoinsTip;
 
 /** Global variable that points to the active block tree (protected by cs_main) */
 extern CBlockTreeDB *pblocktree;
+
+/** Global variable that points to the active rich list. */
+extern CRichView *prichTip;
+
 
 struct CBlockTemplate
 {

@@ -17,6 +17,7 @@
 class CBigNum;
 class CCoins;
 class uint256;
+class CRichView;
 
 // -dbcache default (MiB)
 static const int64_t nDefaultDbCache = 100;
@@ -35,10 +36,13 @@ public:
 
     bool GetCoins(const uint256 &txid, CCoins &coins);
     bool SetCoins(const uint256 &txid, const CCoins &coins);
+    bool GetAddressIndex(const CScript &key, std::pair<int64_t,int> &value);
+    bool SetAddressIndex(const CScript &key, const std::pair<int64_t,int> &value);
     bool HaveCoins(const uint256 &txid);
     uint256 GetBestBlock();
     bool SetBestBlock(const uint256 &hashBlock);
-    bool BatchWrite(const std::map<uint256, CCoins> &mapCoins, const uint256 &hashBlock);
+    bool BatchWrite(const std::map<uint256, CCoins> &mapCoins, const std::map<CScript,std::pair<int64_t,int> > &mapAddressIndex, const uint256 &hashBlock);
+    bool GetRichPriorities(addressPrioritySet &priorities) const;
     bool GetStats(CCoinsStats &stats);
 };
 
@@ -61,6 +65,8 @@ public:
     bool ReadReindexing(bool &fReindex);
     bool ReadTxIndex(const uint256 &txid, CDiskTxPos &pos);
     bool WriteTxIndex(const std::vector<std::pair<uint256, CDiskTxPos> > &list);
+    bool WriteRichListFork(bool fForked);
+    bool ReadRichListFork(bool &fForked);
     bool WriteFlag(const std::string &name, bool fValue);
     bool ReadFlag(const std::string &name, bool &fValue);
     bool LoadBlockIndexGuts();

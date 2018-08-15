@@ -8,6 +8,7 @@
 #include "core.h"
 #include "serialize.h"
 #include "uint256.h"
+#include "richlistdb.h"
 
 #include <assert.h>
 #include <stdint.h>
@@ -212,6 +213,12 @@ public:
     //Modify the CCoins for a given txid
     virtual bool SetCoins(const uint256 &txid, const CCoins &coins);
 
+    //Retrieve the balance of and height where a given scriptPubKey was last used.
+    virtual bool GetAddressIndex(const CScript &key, std::pair<int64_t,int> &value);
+
+    //Modify the balance of and height where a given scriptPubKey was last used.
+    virtual bool SetAddressIndex(const CScript &key, const std::pair<int64_t,int> &value);
+
     //Just check whether we have data for a given txid.
     virtual bool HaveCoins(const uint256 &txid);
 
@@ -221,8 +228,10 @@ public:
     //Modify the currently active block hash
     virtual bool SetBestBlock(const uint256 &hashBlock);
 
-    //Do a bulk modification (multiple SetCoins + one SetBestBlock)
-    virtual bool BatchWrite(const std::map<uint256, CCoins> &mapCoins, const uint256 &hashBlock);
+    //Do a bulk modification (multiple SetCoins and SetAddressIndex + one SetBestBlock)
+    virtual bool BatchWrite(const std::map<uint256, CCoins> &mapCoins, const std::map<CScript, std::pair<int64_t,int> > &mapAddressIndex, const uint256 &hashBlock);
+
+    virtual bool GetRichPriorities(addressPrioritySet &priorities) const;
 
     //Calculate statistics about the unspent transaction output set
     virtual bool GetStats(CCoinsStats &stats);
@@ -242,13 +251,20 @@ public:
     CCoinsViewBacked(CCoinsView &viewIn);
     bool GetCoins(const uint256 &txid, CCoins &coins);
     bool SetCoins(const uint256 &txid, const CCoins &coins);
+    bool GetAddressIndex(const CScript &key, std::pair<int64_t,int> &value);
+    bool SetAddressIndex(const CScript &key, const std::pair<int64_t,int> &value);
     bool HaveCoins(const uint256 &txid);
     uint256 GetBestBlock();
     bool SetBestBlock(const uint256 &hashBlock);
     void SetBackend(CCoinsView &viewIn);
-    bool BatchWrite(const std::map<uint256, CCoins> &mapCoins, const uint256 &hashBlock);
+    bool BatchWrite(const std::map<uint256, CCoins> &mapCoins, const std::map<CScript, std::pair<int64_t,int> > &mapAddressIndex, const uint256 &hashBlock);
+    bool GetRichPriorities(addressPrioritySet &priorities) const;
     bool GetStats(CCoinsStats &stats);
 };
+
+
+
+
 
 
 //CCoinsView that adds a memory cache for transactions to another CCoinsView
@@ -257,6 +273,7 @@ class CCoinsViewCache : public CCoinsViewBacked
 protected:
     uint256 hashBlock;
     std::map<uint256,CCoins> cacheCoins;
+    std::map<CScript, std::pair<int64_t,int> > cacheAddressIndex;
 
 public:
     CCoinsViewCache(CCoinsView &baseIn, bool fDummy = false);
@@ -264,10 +281,13 @@ public:
     //Standard CCoinsView methods
     bool GetCoins(const uint256 &txid, CCoins &coins);
     bool SetCoins(const uint256 &txid, const CCoins &coins);
+    bool GetAddressIndex(const CScript &key, std::pair<int64_t,int> &value);
+    bool SetAddressIndex(const CScript &key, const std::pair<int64_t,int> &value);
     bool HaveCoins(const uint256 &txid);
     uint256 GetBestBlock();
     bool SetBestBlock(const uint256 &hashBlock);
-    bool BatchWrite(const std::map<uint256, CCoins> &mapCoins, const uint256 &hashBlock);
+    bool BatchWrite(const std::map<uint256, CCoins> &mapCoins, const std::map<CScript, std::pair<int64_t,int> > &mapAddressIndex, const uint256 &hashBlock);
+    bool GetRichPriorities(addressPrioritySet &priorities) const;
 
     //Return a modifiable reference to a CCoins. Check HaveCoins first.
     CCoins &GetCoins(const uint256 &txid);
@@ -278,7 +298,7 @@ public:
     //Calculate the size of the cache (in number of transactions)
     unsigned int GetCacheSize();
 
-    //Amount of bitcoins coming in to a transaction
+    //Amount of smileycoins coming in to a transaction
     int64_t GetValueIn(const CTransaction& tx);
 
     //Check whether all prevouts of the transaction are present in the UTXO set represented by this view
